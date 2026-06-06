@@ -1,0 +1,35 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw and generated data (keep documentation)
+data/raw/*
+!data/raw/README.md
+data/processed/*
+!data/processed/README.md
+
+# Generated report figures (keep directory placeholder)
+reports/figures/*
+!reports/figures/.gitkeep
+
+# Power BI temporary and local files
+*.pbix.tmp
+*.pbit.tmp
+~$*.pbix
+
+# Environment and secrets
+.env
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
