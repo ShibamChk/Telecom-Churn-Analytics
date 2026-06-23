@@ -79,42 +79,51 @@ def create_revenue_risk_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_retention_curve(df: pd.DataFrame) -> pd.DataFrame | None:
-    """Approximate retention from current tenure and churn status.
-
-    This is not a true longitudinal survival analysis because it does not track
-    customer status through time. It estimates retention using each customer's
-    current tenure and current churn flag.
-    """
-    tenure_column = find_column(df, ["tenure", "tenure_months", "tenure_in_months", "months_with_company"])
-    if not tenure_column or "churn_flag" not in df.columns:
+    """Approximate survival retention curve from tenure and churn status."""
+    tenure_column = "tenure_in_months"
+    if tenure_column not in df.columns or "churn_flag" not in df.columns:
         return None
 
     working = df.copy()
     working[tenure_column] = safe_numeric(working[tenure_column])
+    working["churn_flag"] = safe_numeric(working["churn_flag"])
     working = working.dropna(subset=[tenure_column, "churn_flag"])
     if working.empty:
         return None
 
-    segment_column = find_column(working, ["contract_group", "contract", "contract_type", "customer_contract"])
-    if segment_column:
+    if "contract_group" in working.columns:
+        segment_column = "contract_group"
+    elif "contract" in working.columns:
+        segment_column = "contract"
+    else:
+        segment_column = None
+
+    if segment_column is not None:
         working["_segment"] = working[segment_column].astype("string").fillna("Unknown")
     else:
         working["_segment"] = "All Customers"
 
+    # This is an approximate survival curve because the source data is a
+    # customer snapshot, not true longitudinal event-history data.
+    # The hazard at month m is estimated from customers whose observed tenure is
+    # at least m and whose churn flag is set at exactly month m.
     records: list[dict[str, object]] = []
     for segment, segment_df in working.groupby("_segment", dropna=False):
         max_tenure = int(segment_df[tenure_column].max())
+        survival_rate = 1.0
         for month in range(0, max_tenure + 1):
-            eligible = segment_df[segment_df[tenure_column].ge(month)]
-            customers_eligible = len(eligible)
-            customers_retained = int(eligible["churn_flag"].eq(0).sum())
+            customers_at_risk = int(segment_df[tenure_column].ge(month).sum())
+            churn_events = int(segment_df["churn_flag"].eq(1).where(segment_df[tenure_column].eq(month), False).sum())
+            monthly_churn_hazard = churn_events / customers_at_risk if customers_at_risk > 0 else 0
+            survival_rate *= 1 - monthly_churn_hazard
             records.append(
                 {
                     "segment": segment,
                     "tenure_month": month,
-                    "customers_eligible": customers_eligible,
-                    "customers_retained": customers_retained,
-                    "retention_rate": customers_retained / customers_eligible if customers_eligible else 0,
+                    "customers_at_risk": customers_at_risk,
+                    "churn_events": churn_events,
+                    "monthly_churn_hazard": monthly_churn_hazard,
+                    "survival_rate": survival_rate,
                 }
             )
     return pd.DataFrame(records)
