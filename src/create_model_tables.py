@@ -78,6 +78,67 @@ def create_revenue_risk_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def create_powerbi_churn_summary(
+    df: pd.DataFrame,
+    segment_column: str,
+    output_filename: str,
+    missing_label: str | None = None,
+) -> pd.DataFrame | None:
+    required_columns = [segment_column, "churn_flag", "total_revenue"]
+    if "revenue_at_risk" not in df.columns and "monthly_charge" not in df.columns:
+        required_columns.append("revenue_at_risk or monthly_charge")
+
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        warn(f"Skipped {output_filename}; missing required columns: {', '.join(missing_columns)}.")
+        return None
+
+    working = df.copy()
+    working["churn_flag"] = safe_numeric(working["churn_flag"]).fillna(0)
+    working["total_revenue"] = safe_numeric(working["total_revenue"]).fillna(0)
+    if "revenue_at_risk" in working.columns:
+        working["_monthly_revenue_at_risk"] = safe_numeric(working["revenue_at_risk"]).fillna(0)
+    else:
+        monthly_charge = safe_numeric(working["monthly_charge"]).fillna(0)
+        working["_monthly_revenue_at_risk"] = monthly_charge.where(working["churn_flag"].eq(1), 0)
+
+    if missing_label is not None:
+        working[segment_column] = working[segment_column].replace(r"^\s*$", pd.NA, regex=True).fillna(missing_label)
+
+    summary = (
+        working.groupby(segment_column, dropna=False)
+        .agg(
+            customer_count=(segment_column, "size"),
+            churned_customers=("churn_flag", "sum"),
+            churn_rate=("churn_flag", "mean"),
+            monthly_revenue_at_risk=("_monthly_revenue_at_risk", "sum"),
+            total_revenue=("total_revenue", "sum"),
+        )
+        .reset_index()
+    )
+    summary["churned_customers"] = summary["churned_customers"].astype(int)
+    return summary
+
+
+def create_churn_category_summary(df: pd.DataFrame, category_column: str) -> pd.DataFrame | None:
+    required_columns = [category_column, "churn_flag"]
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        warn(f"Skipped {category_column}_summary.csv; missing required columns: {', '.join(missing_columns)}.")
+        return None
+
+    working = df.copy()
+    working["churn_flag"] = safe_numeric(working["churn_flag"]).fillna(0)
+    churned = working[working["churn_flag"].eq(1)].copy()
+    if churned.empty:
+        return pd.DataFrame(columns=[category_column, "churned_customers", "share_of_churned_customers"])
+
+    summary = churned.groupby(category_column, dropna=False).agg(churned_customers=(category_column, "size")).reset_index()
+    total_churned = summary["churned_customers"].sum()
+    summary["share_of_churned_customers"] = summary["churned_customers"] / total_churned if total_churned else 0
+    return summary
+
+
 def create_retention_curve(df: pd.DataFrame) -> pd.DataFrame | None:
     """Approximate survival retention curve from tenure and churn status."""
     tenure_column = "tenure_in_months"
@@ -161,6 +222,33 @@ def main() -> int:
         save_table(create_revenue_risk_summary(df), "revenue_risk_summary.csv")
     else:
         warn("Skipped revenue_risk_summary.csv; revenue_at_risk was not found.")
+
+    powerbi_summary_specs = [
+        ("churn_summary_by_internet_type.csv", "internet_type", "No Internet Service"),
+        ("churn_summary_by_offer.csv", "offer", "No Offer"),
+        ("churn_summary_by_online_security.csv", "online_security", "No Internet Service"),
+        ("churn_summary_by_premium_tech_support.csv", "premium_tech_support", "No Internet Service"),
+        ("churn_summary_by_customer_value_segment.csv", "customer_value_segment", None),
+    ]
+    for filename, column, missing_label in powerbi_summary_specs:
+        summary = create_powerbi_churn_summary(df, column, filename, missing_label=missing_label)
+        if summary is not None:
+            save_table(summary, filename)
+
+    churn_category_summary = create_churn_category_summary(df, "churn_category")
+    if churn_category_summary is not None:
+        save_table(churn_category_summary, "churn_category_summary.csv")
+
+    churn_reason_summary = create_churn_category_summary(df, "churn_reason")
+    if churn_reason_summary is not None:
+        churn_reason_summary = churn_reason_summary.sort_values("churned_customers", ascending=False)
+        save_table(churn_reason_summary, "churn_reason_summary.csv")
+
+    city_churn_summary = create_powerbi_churn_summary(df, "city", "city_churn_summary.csv")
+    if city_churn_summary is not None:
+        city_churn_summary["reliable_city_flag"] = city_churn_summary["customer_count"].ge(20)
+        city_churn_summary = city_churn_summary.sort_values("monthly_revenue_at_risk", ascending=False)
+        save_table(city_churn_summary, "city_churn_summary.csv")
 
     retention_curve = create_retention_curve(df)
     if retention_curve is not None:
